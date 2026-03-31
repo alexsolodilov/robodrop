@@ -67,35 +67,10 @@ export class Slope {
 	 * Add a landing point from a bounce event.
 	 * The spline will pass through this point exactly.
 	 */
-	addLandingPoint(x: number, y: number): void {
-		// Find the closest pre-generated point near this X and replace it,
-		// or insert in order if no close match.
-		let bestIdx = -1;
-		let bestDist = Infinity;
-		for (let i = 2; i < this.controlPoints.length; i++) { // skip first 2 (start area)
-			const dist = Math.abs(this.controlPoints[i].x - x);
-			if (dist < bestDist) {
-				bestDist = dist;
-				bestIdx = i;
-			}
-		}
-
-		if (bestIdx >= 0 && bestDist < 200) {
-			// Replace pre-generated point with actual landing
-			this.controlPoints[bestIdx] = { x, y };
-		} else {
-			// Insert in sorted order
-			let insertIdx = this.controlPoints.length;
-			for (let i = 0; i < this.controlPoints.length; i++) {
-				if (this.controlPoints[i].x > x) {
-					insertIdx = i;
-					break;
-				}
-			}
-			this.controlPoints.splice(insertIdx, 0, { x, y });
-		}
-
-		this.redraw();
+	addLandingPoint(_x: number, _y: number): void {
+		// No-op: terrain is pre-generated at init and stays fixed.
+		// Robot landing positions come from analytical trajectories,
+		// not terrain collision, so the slope doesn't need to match exactly.
 	}
 
 	/**
