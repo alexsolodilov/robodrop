@@ -2,6 +2,7 @@ import { stateGame, resetGameState } from './stateGame.svelte';
 import { getGameEngine } from './utils';
 import {
 	KICK_DURATION_MS,
+	BOUNCE_IMPACT_DURATION_MS,
 	RESULT_DELAY_MS,
 } from './constants';
 import type { BookEvent } from './typesBookEvent';
@@ -105,6 +106,9 @@ export const bookEventHandlerMap = {
 			stateGame.isPlaying = false;
 			return;
 		}
+
+		// Brief pause on ground — let player see the landing, spring compression, effects
+		await sleep(BOUNCE_IMPACT_DURATION_MS);
 
 		// Launch to next bounce — but NOT if we've reached/passed the finish
 		if (engine && event.positionX < stateGame.finishX) {
