@@ -89,6 +89,11 @@ export const bookEventHandlerMap = {
 			return;
 		}
 
+		// Finalize terrain when we reach the finish area
+		if (event.positionX >= stateGame.finishX && engine) {
+			engine.finalizeTerrain();
+		}
+
 		// Launch to next bounce — but NOT if we've reached/passed the finish
 		if (engine && event.positionX < stateGame.finishX) {
 			await engine.launchFromBounce(event);
@@ -99,6 +104,7 @@ export const bookEventHandlerMap = {
 		const engine = getGameEngine();
 
 		stateGame.headCatapulting = true;
+		engine?.finalizeTerrain();
 		engine?.triggerSlowMotion(2000);
 
 		if (engine) {
