@@ -1,0 +1,61 @@
+export const winLevelMap = {
+	1: {
+		alias: 'zero',
+		presentationMs: 0,
+		type: 'zero',
+		multiplierThreshold: 0,
+	},
+	2: {
+		alias: 'small',
+		presentationMs: 600,
+		type: 'small',
+		multiplierThreshold: 0.1,
+	},
+	3: {
+		alias: 'standard',
+		presentationMs: 1000,
+		type: 'small',
+		multiplierThreshold: 1,
+	},
+	4: {
+		alias: 'nice',
+		presentationMs: 1500,
+		type: 'medium',
+		multiplierThreshold: 5,
+	},
+	5: {
+		alias: 'big',
+		presentationMs: 3000,
+		type: 'big',
+		text: 'BIG WIN',
+		multiplierThreshold: 20,
+	},
+	6: {
+		alias: 'super',
+		presentationMs: 5000,
+		type: 'super',
+		text: 'SUPER WIN',
+		multiplierThreshold: 50,
+	},
+	7: {
+		alias: 'mega',
+		presentationMs: 8000,
+		type: 'mega',
+		text: 'MEGA WIN',
+		multiplierThreshold: 100,
+	},
+	8: {
+		alias: 'epic',
+		presentationMs: 12000,
+		type: 'epic',
+		text: 'EPIC WIN!',
+		multiplierThreshold: 250,
+	},
+	9: {
+		alias: 'max',
+		presentationMs: 16000,
+		type: 'max',
+		text: 'MAX WIN',
+		multiplierThreshold: 500,
+	},
+} as const;
