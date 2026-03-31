@@ -1,6 +1,17 @@
 import * as PIXI from 'pixi.js';
 import type { RobotType, LimbId, LimbState } from '../types';
-import { ROBOT_BODY_WIDTH, ROBOT_BODY_HEIGHT } from '../constants';
+import {
+	ROBOT_BODY_WIDTH,
+	ROBOT_BODY_HEIGHT,
+	SPRING_STIFFNESS_LIMB,
+	SPRING_LIMIT_LIMB,
+	SPRING_DAMPING_LIMB,
+	LIMB_KICK_SPEED,
+	LIMB_KICK_UP,
+	LIMB_ANGULAR_VEL_MIN,
+	LIMB_ANGULAR_VEL_MAX,
+} from '../constants';
+import { SpringJoint } from './SpringJoint';
 
 interface LimbSprite {
 	sprite: PIXI.Graphics;
@@ -8,6 +19,7 @@ interface LimbSprite {
 	offsetY: number;
 	state: LimbState;
 	isLeg: boolean;
+	joint: SpringJoint;
 }
 
 // Draw a spring/zigzag shape for legs
@@ -122,7 +134,12 @@ export class Robot {
 			drawArm(sprite, armWidth, armLength, this.limbColor, accentColor);
 			sprite.position.set(ox, oy);
 			this.bodyGroup.addChild(sprite);
-			return { sprite, offsetX: ox, offsetY: oy, state: 'intact', isLeg: false };
+			const joint = new SpringJoint({
+				stiffness: SPRING_STIFFNESS_LIMB,
+				damping: SPRING_DAMPING_LIMB,
+				limit: SPRING_LIMIT_LIMB,
+			});
+			return { sprite, offsetX: ox, offsetY: oy, state: 'intact', isLeg: false, joint };
 		};
 
 		// Legs (springs!)
@@ -131,7 +148,12 @@ export class Robot {
 			drawSpring(sprite, this.legWidth, this.legLength, 1.0, this.limbColor);
 			sprite.position.set(ox, oy);
 			this.bodyGroup.addChild(sprite);
-			return { sprite, offsetX: ox, offsetY: oy, state: 'intact', isLeg: true };
+			const joint = new SpringJoint({
+				stiffness: SPRING_STIFFNESS_LIMB,
+				damping: SPRING_DAMPING_LIMB,
+				limit: SPRING_LIMIT_LIMB,
+			});
+			return { sprite, offsetX: ox, offsetY: oy, state: 'intact', isLeg: true, joint };
 		};
 
 		this.limbs.set('left_arm', createArm('left_arm', -ROBOT_BODY_WIDTH / 2 - armWidth / 2, -ROBOT_BODY_HEIGHT / 4));
@@ -199,9 +221,12 @@ export class Robot {
 		limb.sprite.tint = 0xffff00;
 	}
 
-	detachLimb(limbId: LimbId, parentContainer: PIXI.Container): PIXI.Container | null {
+	detachLimb(
+		limbId: LimbId,
+		parentContainer: PIXI.Container,
+	): { container: PIXI.Container; vx: number; vy: number; rotSpeed: number } | null {
 		const limb = this.limbs.get(limbId);
-		if (!limb) return null;
+		if (!limb || limb.state === 'detached') return null;
 
 		limb.state = 'detached';
 		this.bodyGroup.removeChild(limb.sprite);
@@ -216,7 +241,40 @@ export class Robot {
 
 		parentContainer.addChild(detached);
 		this.detachedLimbs.push(detached);
-		return detached;
+
+		// KR-style detach velocities
+		const direction = limbId.startsWith('left_') ? -1 : 1;
+		return {
+			container: detached,
+			vx: direction * LIMB_KICK_SPEED + (Math.random() - 0.5) * 60,
+			vy: -(LIMB_KICK_UP + Math.random() * 100),
+			rotSpeed: (LIMB_ANGULAR_VEL_MIN + Math.random() * (LIMB_ANGULAR_VEL_MAX - LIMB_ANGULAR_VEL_MIN)) * direction,
+		};
+	}
+
+	/** Update spring joints — call each frame from GameEngine */
+	updateJoints(dt: number, bodyAngularVelocity: number): void {
+		for (const [id, limb] of this.limbs) {
+			if (limb.state === 'detached') continue;
+			limb.joint.update(dt, bodyAngularVelocity);
+			limb.sprite.rotation = limb.joint.angle;
+		}
+	}
+
+	/** Apply landing impact impulse to all joint springs */
+	impactJoints(intensity: number): void {
+		for (const [id, limb] of this.limbs) {
+			if (limb.state === 'detached') continue;
+			const direction = limb.isLeg ? -intensity : intensity;
+			limb.joint.impulse(direction);
+		}
+	}
+
+	/** Reset all joints to rest position */
+	resetJoints(): void {
+		for (const [id, limb] of this.limbs) {
+			limb.joint.reset();
+		}
 	}
 
 	detachHead(parentContainer: PIXI.Container): PIXI.Container {
