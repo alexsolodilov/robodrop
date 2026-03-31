@@ -38,25 +38,43 @@ export class Slope {
 	 * Initialize terrain with the starting point.
 	 * Call once at round start before any bounces.
 	 */
-	initTerrain(startX: number, startY: number, finishX: number): void {
+	initTerrain(
+		startX: number,
+		startY: number,
+		finishX: number,
+		landingPoints: { x: number; y: number }[] = [],
+	): void {
 		this.controlPoints = [];
 		this.finishX = finishX;
 
-		// Generate an initial downhill slope so the terrain is visible from the start.
-		// Points will be refined as bounce events arrive.
-		const slopeGradient = 0.8; // Y drops 0.8 per X unit (roughly 40 degrees)
+		// Start area
 		this.controlPoints.push({ x: startX - 100, y: startY - 20 });
 		this.controlPoints.push({ x: startX, y: startY });
 
-		// Pre-generate intermediate slope points up to and past finish
-		const totalLen = finishX + 500;
-		const numPoints = 12;
-		for (let i = 1; i <= numPoints; i++) {
-			const x = startX + (totalLen - startX) * i / numPoints;
-			const baseY = startY + (x - startX) * slopeGradient;
-			// Add gentle variation so it's not a straight line
-			const variation = Math.sin(i * 1.7) * 30 + Math.cos(i * 0.9) * 15;
-			this.controlPoints.push({ x, y: baseY + variation });
+		if (landingPoints.length > 0) {
+			// Build terrain through actual landing points from book events
+			for (const pt of landingPoints) {
+				this.controlPoints.push({ x: pt.x, y: pt.y });
+			}
+			// Extend past the last landing point to finish + buffer
+			const last = landingPoints[landingPoints.length - 1];
+			const prev = landingPoints.length > 1
+				? landingPoints[landingPoints.length - 2]
+				: { x: startX, y: startY };
+			const slope = (last.y - prev.y) / Math.max(1, last.x - prev.x);
+			const endX = finishX + 500;
+			this.controlPoints.push({ x: endX, y: last.y + slope * (endX - last.x) });
+		} else {
+			// Fallback: generate a synthetic downhill slope
+			const slopeGradient = 0.8;
+			const totalLen = finishX + 500;
+			const numPoints = 12;
+			for (let i = 1; i <= numPoints; i++) {
+				const x = startX + (totalLen - startX) * i / numPoints;
+				const baseY = startY + (x - startX) * slopeGradient;
+				const variation = Math.sin(i * 1.7) * 30 + Math.cos(i * 0.9) * 15;
+				this.controlPoints.push({ x, y: baseY + variation });
+			}
 		}
 
 		this.redraw();

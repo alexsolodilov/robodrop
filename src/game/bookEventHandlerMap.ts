@@ -4,6 +4,23 @@ import {
 	KICK_DURATION_MS,
 	RESULT_DELAY_MS,
 } from './constants';
+import type { BookEvent } from './typesBookEvent';
+
+// Collected landing points from all bounce events — set before playback starts
+let pendingLandingPoints: { x: number; y: number }[] = [];
+
+/**
+ * Pre-scan all book events to extract landing points for terrain generation.
+ * Call this before playing the event sequence.
+ */
+export function preloadLandingPoints(events: BookEvent[]): void {
+	pendingLandingPoints = [];
+	for (const ev of events) {
+		if (ev.type === 'bounce') {
+			pendingLandingPoints.push({ x: ev.positionX, y: ev.slopeY });
+		}
+	}
+}
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -19,7 +36,7 @@ export const bookEventHandlerMap = {
 
 		const engine = getGameEngine();
 		if (engine) {
-			await engine.setupRound(event);
+			await engine.setupRound(event, pendingLandingPoints);
 		}
 	},
 
@@ -89,11 +106,6 @@ export const bookEventHandlerMap = {
 			return;
 		}
 
-		// Finalize terrain when we reach the finish area
-		if (event.positionX >= stateGame.finishX && engine) {
-			engine.finalizeTerrain();
-		}
-
 		// Launch to next bounce — but NOT if we've reached/passed the finish
 		if (engine && event.positionX < stateGame.finishX) {
 			await engine.launchFromBounce(event);
@@ -104,7 +116,6 @@ export const bookEventHandlerMap = {
 		const engine = getGameEngine();
 
 		stateGame.headCatapulting = true;
-		engine?.finalizeTerrain();
 		engine?.triggerSlowMotion(2000);
 
 		if (engine) {

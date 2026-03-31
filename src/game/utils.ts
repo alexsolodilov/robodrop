@@ -1,7 +1,7 @@
 import { createPlayBookUtils } from 'utils-book';
 import { stateBet } from 'state-shared';
 import type { Bet } from './typesBookEvent';
-import { bookEventHandlerMap } from './bookEventHandlerMap';
+import { bookEventHandlerMap, preloadLandingPoints } from './bookEventHandlerMap';
 import { resetGameState } from './stateGame.svelte';
 import type { GameEngine } from './engine/GameEngine';
 
@@ -23,6 +23,9 @@ export const playBet = async (bet: Bet) => {
 	if (_engine) {
 		_engine.reset();
 	}
+
+	// Pre-scan events to extract all landing points for terrain generation
+	preloadLandingPoints(bet.state);
 
 	stateBet.winBookEventAmount = 0;
 	await playBookEvents(bet.state);

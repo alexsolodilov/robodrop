@@ -292,7 +292,10 @@ export class GameEngine {
 	// Public API (called from bookEventHandlerMap)
 	// -------------------------------------------------------------------
 
-	async setupRound(event: BookEventGameStart): Promise<void> {
+	async setupRound(
+		event: BookEventGameStart,
+		landingPoints?: { x: number; y: number }[],
+	): Promise<void> {
 		if (this.robot) this.robot.destroy();
 
 		// Spin the wheel to selected robot
@@ -301,10 +304,10 @@ export class GameEngine {
 			await this.robotWheel.selectRobot(event.robot);
 		}
 
-		// Initialize terrain with start point
+		// Build terrain from known landing points
 		if (this.slope) {
-			const startY = 60 * 1.0; // initial slope position (approximate)
-			this.slope.initTerrain(0, startY, event.finishX);
+			const startY = 60 * 1.0;
+			this.slope.initTerrain(0, startY, event.finishX, landingPoints || []);
 		}
 
 		// Create robot at kicker position
@@ -350,11 +353,6 @@ export class GameEngine {
 		if (!this.robot) return;
 
 		this.pendingLandingType = event.landedOn;
-
-		// Add landing point to spline terrain
-		if (this.slope) {
-			this.slope.addLandingPoint(event.positionX, event.slopeY);
-		}
 
 		if (!this.physicsActive) return;
 
