@@ -1,78 +1,176 @@
 import * as PIXI from 'pixi.js';
-import { SLOPE_LENGTH, FINISH_LINE_X } from '../constants';
+import { FINISH_LINE_X } from '../constants';
 
-// Steep slope ~45 degrees, dark silhouette style (like Kamikaze Robots)
-// World coords: X goes right (0 to SLOPE_LENGTH), Y goes down
-// Slope drops steeply: for every 1 unit right, drops ~1 unit down
-const SLOPE_ANGLE = Math.PI / 4; // 45 degrees
-const SLOPE_DROP_RATIO = Math.tan(SLOPE_ANGLE); // 1.0
+/**
+ * Dynamic slope built from Catmull-Rom spline through bounce landing points.
+ * Terrain is constructed incrementally as bounce events arrive.
+ */
+
+interface ControlPoint {
+	x: number;
+	y: number;
+}
 
 export class Slope {
 	public container: PIXI.Container;
+	private controlPoints: ControlPoint[] = [];
+	private slopeGraphics: PIXI.Graphics;
+	private edgeGraphics: PIXI.Graphics;
+	private rocksGraphics: PIXI.Graphics;
+	private finishGraphics: PIXI.Graphics | null = null;
+
+	private finishX = FINISH_LINE_X;
 
 	constructor(parentContainer: PIXI.Container) {
 		this.container = new PIXI.Container();
-		this.drawSlope();
-		this.drawFinishLine();
+		this.slopeGraphics = new PIXI.Graphics();
+		this.edgeGraphics = new PIXI.Graphics();
+		this.rocksGraphics = new PIXI.Graphics();
+
+		this.container.addChild(this.slopeGraphics);
+		this.container.addChild(this.edgeGraphics);
+		this.container.addChild(this.rocksGraphics);
+
 		parentContainer.addChild(this.container);
 	}
 
-	private drawSlope(): void {
-		const g = new PIXI.Graphics();
+	/**
+	 * Initialize terrain with the starting point.
+	 * Call once at round start before any bounces.
+	 */
+	initTerrain(startX: number, startY: number, finishX: number): void {
+		this.controlPoints = [];
+		this.finishX = finishX;
 
-		// Dark silhouette slope — long polygon from start to well past finish
-		const totalLen = SLOPE_LENGTH + 500;
-		const startY = 0;
-		const endY = totalLen * SLOPE_DROP_RATIO;
+		// Start with a flat-ish area before the launch
+		this.controlPoints.push({ x: startX - 100, y: startY - 20 });
+		this.controlPoints.push({ x: startX, y: startY });
 
-		// Top edge of slope (the surface the robot bounces on)
-		g.moveTo(-200, startY);
-		// Add some rocky irregularity
-		const segments = 60;
-		for (let i = 0; i <= segments; i++) {
-			const x = (i / segments) * totalLen;
-			const baseY = x * SLOPE_DROP_RATIO;
-			// Small random bumps for texture
-			const bump = Math.sin(x * 0.05) * 8 + Math.sin(x * 0.13) * 4;
-			g.lineTo(x, baseY + bump);
+		this.redraw();
+	}
+
+	/**
+	 * Add a landing point from a bounce event.
+	 * The spline will pass through this point exactly.
+	 */
+	addLandingPoint(x: number, y: number): void {
+		// Avoid duplicate or out-of-order points
+		const last = this.controlPoints[this.controlPoints.length - 1];
+		if (last && x <= last.x) return;
+
+		this.controlPoints.push({ x, y });
+		this.redraw();
+	}
+
+	/**
+	 * Finalize the terrain — add endpoint beyond finish line.
+	 */
+	finalize(): void {
+		const last = this.controlPoints[this.controlPoints.length - 1];
+		if (!last) return;
+
+		// Extrapolate trend for finish area
+		const prev = this.controlPoints[this.controlPoints.length - 2] || last;
+		const slope = (last.y - prev.y) / Math.max(1, last.x - prev.x);
+		const endX = this.finishX + 500;
+		const endY = last.y + slope * (endX - last.x);
+		this.controlPoints.push({ x: endX, y: endY });
+
+		this.redraw();
+		this.drawFinishLine();
+	}
+
+	/**
+	 * Get slope Y at any world X position.
+	 * Uses Catmull-Rom interpolation through control points.
+	 */
+	getSlopeYAtX(x: number): number {
+		const pts = this.controlPoints;
+		if (pts.length === 0) return 0;
+		if (pts.length === 1) return pts[0].y;
+
+		// Clamp to range
+		if (x <= pts[0].x) return pts[0].y;
+		if (x >= pts[pts.length - 1].x) return pts[pts.length - 1].y;
+
+		// Find segment
+		let i = 0;
+		for (i = 0; i < pts.length - 1; i++) {
+			if (x >= pts[i].x && x < pts[i + 1].x) break;
 		}
-		// Close polygon down and back
-		g.lineTo(totalLen, endY + 800);
-		g.lineTo(-200, 800);
-		g.closePath();
-		g.fill(0x1a1a2e); // dark silhouette
 
-		// Surface edge highlight
-		const edge = new PIXI.Graphics();
-		edge.moveTo(-200, 0);
-		for (let i = 0; i <= segments; i++) {
-			const x = (i / segments) * totalLen;
-			const baseY = x * SLOPE_DROP_RATIO;
-			const bump = Math.sin(x * 0.05) * 8 + Math.sin(x * 0.13) * 4;
-			edge.lineTo(x, baseY + bump);
+		// Catmull-Rom needs 4 points: p0, p1, p2, p3
+		const p0 = pts[Math.max(0, i - 1)];
+		const p1 = pts[i];
+		const p2 = pts[Math.min(pts.length - 1, i + 1)];
+		const p3 = pts[Math.min(pts.length - 1, i + 2)];
+
+		const t = (x - p1.x) / Math.max(1, p2.x - p1.x);
+
+		const baseY = catmullRom(p0.y, p1.y, p2.y, p3.y, t);
+
+		// Small surface texture noise
+		const bump = Math.sin(x * 0.05) * 4 + Math.sin(x * 0.13) * 2;
+
+		return baseY + bump;
+	}
+
+	private redraw(): void {
+		const pts = this.controlPoints;
+		if (pts.length < 2) return;
+
+		this.slopeGraphics.clear();
+		this.edgeGraphics.clear();
+		this.rocksGraphics.clear();
+
+		const startX = pts[0].x - 200;
+		const endX = pts[pts.length - 1].x + 200;
+		const step = 8; // pixels per segment for smooth curve
+
+		// Build surface path
+		const surfacePoints: { x: number; y: number }[] = [];
+		for (let x = startX; x <= endX; x += step) {
+			surfacePoints.push({ x, y: this.getSlopeYAtX(x) });
 		}
-		edge.stroke({ width: 3, color: 0x2d2d4e });
 
-		// Scattered rocks on surface
-		const rocks = new PIXI.Graphics();
-		for (let x = 50; x < totalLen; x += 60 + Math.random() * 80) {
-			const baseY = x * SLOPE_DROP_RATIO;
+		// Fill polygon (surface → bottom)
+		this.slopeGraphics.moveTo(surfacePoints[0].x, surfacePoints[0].y);
+		for (const p of surfacePoints) {
+			this.slopeGraphics.lineTo(p.x, p.y);
+		}
+		const maxY = Math.max(...surfacePoints.map(p => p.y)) + 800;
+		this.slopeGraphics.lineTo(endX, maxY);
+		this.slopeGraphics.lineTo(startX, maxY);
+		this.slopeGraphics.closePath();
+		this.slopeGraphics.fill(0x1a1a2e);
+
+		// Edge highlight
+		this.edgeGraphics.moveTo(surfacePoints[0].x, surfacePoints[0].y);
+		for (const p of surfacePoints) {
+			this.edgeGraphics.lineTo(p.x, p.y);
+		}
+		this.edgeGraphics.stroke({ width: 3, color: 0x2d2d4e });
+
+		// Scattered rocks
+		for (let x = pts[0].x; x < endX - 200; x += 60 + Math.random() * 80) {
+			const y = this.getSlopeYAtX(x);
 			const size = 3 + Math.random() * 6;
-			rocks.circle(x, baseY - size * 0.3, size);
-			rocks.fill({ color: 0x252545, alpha: 0.8 });
+			this.rocksGraphics.circle(x, y - size * 0.3, size);
+			this.rocksGraphics.fill({ color: 0x252545, alpha: 0.8 });
 		}
-
-		this.container.addChild(g);
-		this.container.addChild(edge);
-		this.container.addChild(rocks);
 	}
 
 	private drawFinishLine(): void {
+		if (this.finishGraphics) {
+			this.container.removeChild(this.finishGraphics);
+			this.finishGraphics.destroy();
+		}
+
 		const g = new PIXI.Graphics();
-		const finishY = this.getSlopeYAtX(FINISH_LINE_X);
+		const finishY = this.getSlopeYAtX(this.finishX);
 
 		// Tall finish pole
-		g.rect(FINISH_LINE_X - 2, finishY - 120, 4, 120);
+		g.rect(this.finishX - 2, finishY - 120, 4, 120);
 		g.fill(0xffeb3b);
 
 		// Checkered flag
@@ -82,27 +180,36 @@ export class Slope {
 		for (let row = 0; row < flagH / cellSize; row++) {
 			for (let col = 0; col < flagW / cellSize; col++) {
 				const color = (row + col) % 2 === 0 ? 0xffffff : 0x000000;
-				g.rect(FINISH_LINE_X + 2 + col * cellSize, finishY - 120 + row * cellSize, cellSize, cellSize);
+				g.rect(
+					this.finishX + 2 + col * cellSize,
+					finishY - 120 + row * cellSize,
+					cellSize, cellSize,
+				);
 				g.fill(color);
 			}
 		}
 
 		// Glow line on ground
-		g.rect(FINISH_LINE_X - 20, finishY - 2, 40, 4);
+		g.rect(this.finishX - 20, finishY - 2, 40, 4);
 		g.fill({ color: 0xffd700, alpha: 0.6 });
 
+		this.finishGraphics = g;
 		this.container.addChild(g);
-	}
-
-	getSlopeYAtX(x: number): number {
-		// Clamp to slope length — beyond that, return the end-of-slope value
-		const clampedX = Math.min(x, SLOPE_LENGTH + 200);
-		const baseY = clampedX * SLOPE_DROP_RATIO;
-		const bump = Math.sin(clampedX * 0.05) * 8 + Math.sin(clampedX * 0.13) * 4;
-		return baseY + bump;
 	}
 
 	destroy(): void {
 		this.container.destroy({ children: true });
 	}
+}
+
+/** Catmull-Rom spline interpolation */
+function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): number {
+	const t2 = t * t;
+	const t3 = t2 * t;
+	return 0.5 * (
+		(2 * p1) +
+		(-p0 + p2) * t +
+		(2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+		(-p0 + 3 * p1 - 3 * p2 + p3) * t3
+	);
 }
