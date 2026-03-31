@@ -27,7 +27,6 @@
 	const isIdle = $derived(!stateGame.isPlaying && !stateGame.showResult);
 	const canLaunch = $derived(
 		!stateGame.isPlaying &&
-		!stateGame.showResult &&
 		stateBet.betAmount > 0,
 	);
 
@@ -71,6 +70,7 @@
 	function handleLaunch() {
 		if (!canLaunch) return;
 		stateGame.showResult = false;
+		if (engine) engine.reset();
 		eventEmitter.broadcast({ type: 'bet' });
 	}
 
