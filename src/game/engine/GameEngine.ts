@@ -184,11 +184,13 @@ export class GameEngine {
 
 		this.robot.container.position.set(this.robot.x, this.robot.y);
 
-		// --- Spring joint update ---
-		const bodyAngVel = this.targetSpinCount > 0
-			? (this.targetSpinCount * Math.PI * 2) / this.flightDuration
-			: this.robotAngularVel;
-		this.robot.updateJoints(dt, bodyAngVel);
+		// --- Spring joint update (only when actually spinning/tumbling) ---
+		if (this.targetSpinCount > 0 || Math.abs(this.robotAngularVel) > 0.1) {
+			const bodyAngVel = this.targetSpinCount > 0
+				? (this.targetSpinCount * Math.PI * 2) / this.flightDuration
+				: this.robotAngularVel;
+			this.robot.updateJoints(dt, bodyAngVel);
+		}
 
 		// --- Spin notifications mid-flight ---
 		const slopeYHere = this.slope ? this.slope.getSlopeYAtX(this.robot.x) : this.robot.y;
@@ -309,6 +311,7 @@ export class GameEngine {
 		this.robot = new Robot(event.robot, this.worldContainer);
 		const startSlopeY = this.slope ? this.slope.getSlopeYAtX(60) : 60;
 		this.robot.setPosition(60, startSlopeY + ROBOT_OFFSET_Y);
+		this.robot.resetJoints();
 
 		// Camera starts at top of slope
 		this.camera.x = -50;
@@ -355,19 +358,23 @@ export class GameEngine {
 
 		if (!this.physicsActive) return;
 
-		// Recalculate the arc to land exactly at the event's position.
+		// Compute a NEW arc from current robot position to the landing point.
+		// Use event.airTime as total flight for this segment.
+		// The robot is already in flight — we set flightElapsed = 0 and compute
+		// vx/vy so the parabola starts here and ends at the target.
 		const currentX = this.robot.x;
 		const currentY = this.robot.y;
 		const targetX = event.positionX;
 		const targetY = event.slopeY + ROBOT_OFFSET_Y;
 
-		const remainingTime = Math.max(0.3, event.airTime - this.flightElapsed);
+		// Use full airTime for the arc (this is the time from launch to landing)
+		const totalTime = Math.max(0.5, event.airTime);
 
 		this.arcStartX = currentX;
 		this.arcStartY = currentY;
-		this.arcVx = (targetX - currentX) / remainingTime;
-		this.arcVy = (targetY - currentY - 0.5 * KR_GRAVITY * remainingTime * remainingTime) / remainingTime;
-		this.flightDuration = remainingTime;
+		this.arcVx = (targetX - currentX) / totalTime;
+		this.arcVy = (targetY - currentY - 0.5 * KR_GRAVITY * totalTime * totalTime) / totalTime;
+		this.flightDuration = totalTime;
 		this.flightElapsed = 0;
 
 		this.flightStartRotation = this.robot.rotation;

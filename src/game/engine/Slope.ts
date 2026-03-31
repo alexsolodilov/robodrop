@@ -42,11 +42,25 @@ export class Slope {
 		this.controlPoints = [];
 		this.finishX = finishX;
 
-		// Start with a flat-ish area before the launch
+		// Generate an initial downhill slope so the terrain is visible from the start.
+		// Points will be refined as bounce events arrive.
+		const slopeGradient = 0.8; // Y drops 0.8 per X unit (roughly 40 degrees)
 		this.controlPoints.push({ x: startX - 100, y: startY - 20 });
 		this.controlPoints.push({ x: startX, y: startY });
 
+		// Pre-generate intermediate slope points up to and past finish
+		const totalLen = finishX + 500;
+		const numPoints = 12;
+		for (let i = 1; i <= numPoints; i++) {
+			const x = startX + (totalLen - startX) * i / numPoints;
+			const baseY = startY + (x - startX) * slopeGradient;
+			// Add gentle variation so it's not a straight line
+			const variation = Math.sin(i * 1.7) * 30 + Math.cos(i * 0.9) * 15;
+			this.controlPoints.push({ x, y: baseY + variation });
+		}
+
 		this.redraw();
+		this.drawFinishLine();
 	}
 
 	/**
@@ -54,11 +68,33 @@ export class Slope {
 	 * The spline will pass through this point exactly.
 	 */
 	addLandingPoint(x: number, y: number): void {
-		// Avoid duplicate or out-of-order points
-		const last = this.controlPoints[this.controlPoints.length - 1];
-		if (last && x <= last.x) return;
+		// Find the closest pre-generated point near this X and replace it,
+		// or insert in order if no close match.
+		let bestIdx = -1;
+		let bestDist = Infinity;
+		for (let i = 2; i < this.controlPoints.length; i++) { // skip first 2 (start area)
+			const dist = Math.abs(this.controlPoints[i].x - x);
+			if (dist < bestDist) {
+				bestDist = dist;
+				bestIdx = i;
+			}
+		}
 
-		this.controlPoints.push({ x, y });
+		if (bestIdx >= 0 && bestDist < 200) {
+			// Replace pre-generated point with actual landing
+			this.controlPoints[bestIdx] = { x, y };
+		} else {
+			// Insert in sorted order
+			let insertIdx = this.controlPoints.length;
+			for (let i = 0; i < this.controlPoints.length; i++) {
+				if (this.controlPoints[i].x > x) {
+					insertIdx = i;
+					break;
+				}
+			}
+			this.controlPoints.splice(insertIdx, 0, { x, y });
+		}
+
 		this.redraw();
 	}
 
@@ -66,16 +102,6 @@ export class Slope {
 	 * Finalize the terrain — add endpoint beyond finish line.
 	 */
 	finalize(): void {
-		const last = this.controlPoints[this.controlPoints.length - 1];
-		if (!last) return;
-
-		// Extrapolate trend for finish area
-		const prev = this.controlPoints[this.controlPoints.length - 2] || last;
-		const slope = (last.y - prev.y) / Math.max(1, last.x - prev.x);
-		const endX = this.finishX + 500;
-		const endY = last.y + slope * (endX - last.x);
-		this.controlPoints.push({ x: endX, y: endY });
-
 		this.redraw();
 		this.drawFinishLine();
 	}
