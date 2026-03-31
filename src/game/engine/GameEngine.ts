@@ -7,7 +7,16 @@ import { Camera } from './Camera';
 import { Kicker } from './Kicker';
 import { RobotWheel } from './RobotWheel';
 import { stateGame } from '../stateGame.svelte';
-import { SLOW_MOTION_FACTOR, GAME_WIDTH, GAME_HEIGHT } from '../constants';
+import {
+	SLOW_MOTION_FACTOR,
+	GAME_WIDTH,
+	GAME_HEIGHT,
+	KR_GRAVITY,
+	KR_AIR_DRAG,
+	KR_TICK_RATE,
+	LIMB_FADE_RATE,
+	LANDING_ANGLES,
+} from '../constants';
 import type {
 	BookEventGameStart,
 	BookEventKick,
@@ -15,10 +24,8 @@ import type {
 	BookEventHeadCatapult,
 } from '../typesBookEvent';
 
-// Physics constants — tuned for visual feel on a 45° slope
-const VEL_SCALE = 30;     // convert event velocity → world velocity
-const GRAVITY = 400;       // world units/s² (pulls robot down)
-const ROBOT_OFFSET_Y = -30; // robot center offset above slope surface
+const VEL_SCALE = 30;
+const ROBOT_OFFSET_Y = -30;
 
 export class GameEngine {
 	public app: PIXI.Application;
@@ -36,30 +43,31 @@ export class GameEngine {
 	private slowMotionTimer = 0;
 	private slowMotionFactor = 1;
 
-	// Physics state
+	// --- Analytical trajectory state ---
 	private physicsActive = false;
-	private robotVx = 0;
-	private robotVy = 0;       // positive = downward (screen coords)
-	private robotAngularVel = 0;
-
-	// Bounce waiting — resolves when robot hits slope
-	private bounceResolve: (() => void) | null = null;
-
-	// In-flight spin tracking
+	private arcStartX = 0;
+	private arcStartY = 0;
+	private arcVx = 0;
+	private arcVy = 0;
+	private flightElapsed = 0;
+	private flightDuration = 1;
 	private flightStartRotation = 0;
 	private completedSpins = 0;
-	private targetSpinCount = 0;       // exact spins from book event
-	private flightElapsed = 0;         // time since launch
-	private estimatedFlightTime = 1;   // estimated total flight duration
-
-	// Landing alignment — robot visually matches landing type before impact
+	private targetSpinCount = 0;
+	private targetLandingAngle = 0;
+	private robotAngularVel = 0;
+	private bounceResolve: (() => void) | null = null;
 	private pendingLandingType: string | null = null;
 
-	// Head catapult
+	// Head catapult — also analytical
 	private headContainer: PIXI.Container | null = null;
 	private headPhysicsActive = false;
-	private headVx = 0;
-	private headVy = 0;
+	private headArcStartX = 0;
+	private headArcStartY = 0;
+	private headArcVx = 0;
+	private headArcVy = 0;
+	private headFlightElapsed = 0;
+	private headFlightDuration = 1;
 	private headAngularVel = 0;
 	private headResolve: (() => void) | null = null;
 
@@ -143,7 +151,8 @@ export class GameEngine {
 
 		// Trail particles while flying
 		if (this.robot && this.physicsActive && this.effects) {
-			const speed = Math.sqrt(this.robotVx ** 2 + this.robotVy ** 2);
+			const currentVy = this.arcVy + KR_GRAVITY * this.flightElapsed;
+			const speed = Math.sqrt(this.arcVx ** 2 + currentVy ** 2);
 			if (speed > 50) {
 				this.effects.spawnTrail(this.robot.x, this.robot.y, speed * 0.01);
 			}
@@ -157,31 +166,34 @@ export class GameEngine {
 		if (!this.physicsActive || !this.robot) return;
 
 		this.flightElapsed += dt;
+		const t = this.flightElapsed;
 
-		// Apply gravity
-		this.robotVy += GRAVITY * dt;
-
-		// Move robot
-		this.robot.x += this.robotVx * dt;
-		this.robot.y += this.robotVy * dt;
-
-		const slopeYHere = this.slope ? this.slope.getSlopeYAtX(this.robot.x) : this.robot.y;
-		const heightAboveSlope = slopeYHere - this.robot.y;
+		// --- Analytical position (parabolic arc) ---
+		this.robot.x = this.arcStartX + this.arcVx * t;
+		this.robot.y = this.arcStartY + this.arcVy * t + 0.5 * KR_GRAVITY * t * t;
 
 		// --- Rotation ---
 		if (this.targetSpinCount > 0) {
-			// Eased spins through the full flight arc
-			const progress = Math.min(1, this.flightElapsed / this.estimatedFlightTime);
+			const progress = Math.min(1, t / this.flightDuration);
 			const easedProgress = easeInOutCubic(progress);
-			const targetRotation = this.flightStartRotation + this.targetSpinCount * Math.PI * 2 * easedProgress;
-			this.robot.setRotation(targetRotation);
+			const totalRotation = this.targetSpinCount * Math.PI * 2 + this.targetLandingAngle;
+			this.robot.setRotation(this.flightStartRotation + totalRotation * easedProgress);
 		} else {
-			// No spins — gentle tumble
 			this.robot.setRotation(this.robot.rotation + this.robotAngularVel * dt);
 		}
+
 		this.robot.container.position.set(this.robot.x, this.robot.y);
 
-		// Detect completed spins mid-flight → show notifications
+		// --- Spring joint update ---
+		const bodyAngVel = this.targetSpinCount > 0
+			? (this.targetSpinCount * Math.PI * 2) / this.flightDuration
+			: this.robotAngularVel;
+		this.robot.updateJoints(dt, bodyAngVel);
+
+		// --- Spin notifications mid-flight ---
+		const slopeYHere = this.slope ? this.slope.getSlopeYAtX(this.robot.x) : this.robot.y;
+		const heightAboveSlope = slopeYHere - this.robot.y;
+
 		if (heightAboveSlope > 60) {
 			const totalRotation = Math.abs(this.robot.rotation - this.flightStartRotation);
 			const fullSpins = Math.floor(totalRotation / (Math.PI * 2));
@@ -201,58 +213,51 @@ export class GameEngine {
 			}
 		}
 
-		// Check collision with slope
-		if (this.slope && this.robotVy > 0) {
-			const slopeY = this.slope.getSlopeYAtX(this.robot.x) + ROBOT_OFFSET_Y;
-			if (this.robot.y >= slopeY) {
-				this.robot.y = slopeY;
-				// Snap to landing pose on impact — masked by sparks + screen shake
-				if (this.pendingLandingType) {
-					this.robot.setRotation(this.getLandingAngle(this.pendingLandingType));
-					this.pendingLandingType = null;
-				}
-				this.robot.container.position.set(this.robot.x, this.robot.y);
-				this.physicsActive = false;
+		// --- Landing detection (time-based) ---
+		if (t >= this.flightDuration) {
+			this.robot.x = this.arcStartX + this.arcVx * this.flightDuration;
+			this.robot.y = this.arcStartY + this.arcVy * this.flightDuration
+				+ 0.5 * KR_GRAVITY * this.flightDuration * this.flightDuration;
 
-				if (this.bounceResolve) {
-					this.bounceResolve();
-					this.bounceResolve = null;
-				}
+			if (this.pendingLandingType) {
+				this.robot.setRotation(LANDING_ANGLES[this.pendingLandingType] ?? 0);
+				this.pendingLandingType = null;
 			}
-		}
-	}
 
-	/** Target rotation angle for each landing type */
-	private getLandingAngle(landingType: string): number {
-		switch (landingType) {
-			case 'both_feet': return 0;                   // upright
-			case 'one_leg':   return Math.PI * 0.15;      // slight tilt
-			case 'arm':       return Math.PI * 0.5;       // sideways
-			case 'body':      return Math.PI * 0.7;       // nearly face-down
-			case 'head':      return Math.PI;              // upside down
-			default:          return 0;
+			this.robot.container.position.set(this.robot.x, this.robot.y);
+			this.physicsActive = false;
+
+			this.robot.impactJoints(2);
+
+			if (this.bounceResolve) {
+				this.bounceResolve();
+				this.bounceResolve = null;
+			}
 		}
 	}
 
 	private updateHeadPhysics(dt: number): void {
 		if (!this.headPhysicsActive || !this.headContainer) return;
 
-		this.headVy += GRAVITY * dt;
-		const hx = this.headContainer.position.x + this.headVx * dt;
-		const hy = this.headContainer.position.y + this.headVy * dt;
-		this.headContainer.position.set(hx, hy);
+		this.headFlightElapsed += dt;
+		const t = this.headFlightElapsed;
+
+		this.headContainer.position.set(
+			this.headArcStartX + this.headArcVx * t,
+			this.headArcStartY + this.headArcVy * t + 0.5 * KR_GRAVITY * t * t,
+		);
 		this.headContainer.rotation += this.headAngularVel * dt;
 
-		// Check if head hit the slope
-		if (this.slope && this.headVy > 0) {
-			const slopeY = this.slope.getSlopeYAtX(hx);
-			if (hy >= slopeY) {
-				this.headPhysicsActive = false;
-				this.headContainer.position.y = slopeY;
-				if (this.headResolve) {
-					this.headResolve();
-					this.headResolve = null;
-				}
+		if (t >= this.headFlightDuration) {
+			this.headPhysicsActive = false;
+			this.headContainer.position.set(
+				this.headArcStartX + this.headArcVx * this.headFlightDuration,
+				this.headArcStartY + this.headArcVy * this.headFlightDuration
+					+ 0.5 * KR_GRAVITY * this.headFlightDuration * this.headFlightDuration,
+			);
+			if (this.headResolve) {
+				this.headResolve();
+				this.headResolve = null;
 			}
 		}
 	}
@@ -260,11 +265,18 @@ export class GameEngine {
 	private updateDetachedLimbs(dt: number): void {
 		for (let i = this.detachedLimbs.length - 1; i >= 0; i--) {
 			const limb = this.detachedLimbs[i];
-			limb.vy += GRAVITY * dt;
+
+			limb.vy += KR_GRAVITY * dt;
+
+			// Air drag: 0.3% per 30ms tick, frame-rate independent
+			const dragFactor = Math.pow(1 - KR_AIR_DRAG, dt * KR_TICK_RATE);
+			limb.vx *= dragFactor;
+			limb.vy *= dragFactor;
+
 			limb.container.position.x += limb.vx * dt;
 			limb.container.position.y += limb.vy * dt;
 			limb.container.rotation += limb.rotSpeed * dt;
-			limb.container.alpha -= dt * 0.4;
+			limb.container.alpha -= dt * LIMB_FADE_RATE;
 
 			if (limb.container.alpha <= 0) {
 				this.worldContainer.removeChild(limb.container);
@@ -287,6 +299,12 @@ export class GameEngine {
 			await this.robotWheel.selectRobot(event.robot);
 		}
 
+		// Initialize terrain with start point
+		if (this.slope) {
+			const startY = 60 * 1.0; // initial slope position (approximate)
+			this.slope.initTerrain(0, startY, event.finishX);
+		}
+
 		// Create robot at kicker position
 		this.robot = new Robot(event.robot, this.worldContainer);
 		const startSlopeY = this.slope ? this.slope.getSlopeYAtX(60) : 60;
@@ -305,35 +323,58 @@ export class GameEngine {
 	async startKick(event: BookEventKick): Promise<void> {
 		if (!this.robot) return;
 
-		// Hide wheel, play kick animation
 		if (this.robotWheel) this.robotWheel.setVisible(false);
 		if (this.kicker) await this.kicker.kick();
 
-		// Launch robot with initial velocity from event
-		this.robotVx = event.initialVx * VEL_SCALE;
-		this.robotVy = event.initialVy * VEL_SCALE;
-		this.robotAngularVel = event.initialVx * 0.3; // gentle initial tumble
-		this.targetSpinCount = 0; // no target spins for kick
+		// For the initial kick, we don't know the landing point yet.
+		// Use velocity from event; first waitForBounce will recalculate the arc.
+		this.arcStartX = this.robot.x;
+		this.arcStartY = this.robot.y;
+		this.arcVx = event.initialVx * VEL_SCALE;
+		this.arcVy = event.initialVy * VEL_SCALE;
+		this.flightDuration = 2.0; // will be corrected by first bounce event
+
+		this.robotAngularVel = event.initialVx * 0.3;
+		this.targetSpinCount = 0;
+		this.targetLandingAngle = 0;
 		this.flightStartRotation = this.robot.rotation;
 		this.completedSpins = 0;
 		this.flightElapsed = 0;
-		this.estimatedFlightTime = 1;
 		this.physicsActive = true;
 	}
 
 	async waitForBounce(event: BookEventBounce): Promise<void> {
 		if (!this.robot) return;
 
-		// Tell physics what landing type to align to before impact
 		this.pendingLandingType = event.landedOn;
 
-		// If physics aren't active (first bounce after crash anim etc), start them
-		if (!this.physicsActive) {
-			// Robot is on slope, physics will be activated by launchFromBounce
-			return;
+		// Add landing point to spline terrain
+		if (this.slope) {
+			this.slope.addLandingPoint(event.positionX, event.slopeY);
 		}
 
-		// Wait for physics to detect slope collision
+		if (!this.physicsActive) return;
+
+		// Recalculate the arc to land exactly at the event's position.
+		const currentX = this.robot.x;
+		const currentY = this.robot.y;
+		const targetX = event.positionX;
+		const targetY = event.slopeY + ROBOT_OFFSET_Y;
+
+		const remainingTime = Math.max(0.3, event.airTime - this.flightElapsed);
+
+		this.arcStartX = currentX;
+		this.arcStartY = currentY;
+		this.arcVx = (targetX - currentX) / remainingTime;
+		this.arcVy = (targetY - currentY - 0.5 * KR_GRAVITY * remainingTime * remainingTime) / remainingTime;
+		this.flightDuration = remainingTime;
+		this.flightElapsed = 0;
+
+		this.flightStartRotation = this.robot.rotation;
+		this.targetSpinCount = event.spinCount;
+		this.targetLandingAngle = LANDING_ANGLES[event.landedOn] ?? 0;
+		this.completedSpins = 0;
+
 		return new Promise<void>((resolve) => {
 			this.bounceResolve = resolve;
 		});
@@ -344,10 +385,14 @@ export class GameEngine {
 
 		const slopeY = this.slope ? this.slope.getSlopeYAtX(this.robot.x) : this.robot.y;
 
-		// Spring compression on feet landing (non-blocking — fire and forget)
+		// Spring compression on feet landing
 		if (event.landedOn === 'both_feet') {
-			this.robot.compressLegs(); // no await!
+			this.robot.compressLegs();
 		}
+
+		// Landing impact on spring joints
+		const impactIntensity = event.landedOn === 'both_feet' ? 1.5 : 3;
+		this.robot.impactJoints(impactIntensity);
 
 		// Sparks at impact
 		if (this.effects) {
@@ -357,14 +402,9 @@ export class GameEngine {
 		// Detach limb visually
 		if (event.limbLost) {
 			const detached = this.robot.detachLimb(event.limbLost, this.worldContainer);
-			if (detached && this.effects) {
-				this.effects.spawnBolts(this.robot.x, slopeY);
-				this.detachedLimbs.push({
-					container: detached,
-					vx: this.robotVx * 0.3 + (Math.random() - 0.5) * 100,
-					vy: -100 - Math.random() * 150,
-					rotSpeed: (Math.random() - 0.5) * 15,
-				});
+			if (detached) {
+				if (this.effects) this.effects.spawnBolts(this.robot.x, slopeY);
+				this.detachedLimbs.push(detached);
 			}
 		}
 
@@ -373,7 +413,7 @@ export class GameEngine {
 			this.robot.loosenLimb(event.limbLoosened);
 		}
 
-		// Floating text for penalties (spin notifications shown mid-flight)
+		// Floating text for penalties
 		if (this.effects && event.penaltyDivisor > 1) {
 			this.effects.spawnFloatingText(
 				this.robot.x, slopeY - 60,
@@ -381,28 +421,24 @@ export class GameEngine {
 			);
 		}
 
-		// Launch with new velocity from event data
-		this.robotVx = event.launchVx * VEL_SCALE;
-		this.robotVy = event.launchVy * VEL_SCALE;
+		// Set up analytical arc for the next bounce
+		this.arcStartX = this.robot.x;
+		this.arcStartY = this.robot.y;
+		this.arcVx = event.launchVx * VEL_SCALE;
+		this.arcVy = event.launchVy * VEL_SCALE;
+		this.flightDuration = Math.max(0.5, event.airTime);
 
-		// Reset spin tracking
 		this.flightStartRotation = this.robot.rotation;
 		this.completedSpins = 0;
 		this.flightElapsed = 0;
 		this.targetSpinCount = event.spinCount;
-
-		// Use server-provided airTime for spin easing — it's the same value
-		// that determined spinCount, so the visual rotation matches the flight.
-		this.estimatedFlightTime = Math.max(0.5, event.airTime);
+		this.targetLandingAngle = 0; // will be set by next waitForBounce
 
 		if (event.spinCount > 0) {
-			// Synced spins — angularVel not used, rotation is eased in updatePhysics
 			this.robotAngularVel = 0;
 		} else if (event.landedOn !== 'both_feet') {
-			// Bad landing — moderate tumble
 			this.robotAngularVel = ((Math.random() - 0.5) * 3) + (event.launchVx > 0 ? 1 : -1);
 		} else {
-			// Good landing, no spins — very gentle rotation
 			this.robotAngularVel = (Math.random() - 0.5) * 0.8;
 		}
 		this.physicsActive = true;
@@ -430,12 +466,7 @@ export class GameEngine {
 			for (const limbId of ['left_leg', 'right_leg', 'left_arm', 'right_arm'] as const) {
 				const detached = this.robot.detachLimb(limbId, this.worldContainer);
 				if (detached) {
-					this.detachedLimbs.push({
-						container: detached,
-						vx: (Math.random() - 0.5) * 200,
-						vy: -80 - Math.random() * 200,
-						rotSpeed: (Math.random() - 0.5) * 20,
-					});
+					this.detachedLimbs.push(detached);
 				}
 			}
 		}
@@ -447,22 +478,34 @@ export class GameEngine {
 	async playHeadCatapult(event: BookEventHeadCatapult): Promise<void> {
 		if (!this.robot) return;
 
-		// Use robot's actual visual position, not the math's positionX
 		const robotX = this.robot.x;
 		const robotY = this.robot.y;
 
 		this.robot.detachBody();
 		this.headContainer = this.robot.detachHead(this.worldContainer);
-
 		this.headContainer.position.set(robotX, robotY - 10);
-		this.headVx = event.headLaunchVx * VEL_SCALE;
-		this.headVy = event.headLaunchVy * VEL_SCALE;
+
+		// Compute analytical arc for head
+		this.headArcStartX = robotX;
+		this.headArcStartY = robotY - 10;
+		this.headFlightDuration = event.headAirTime;
+
+		const targetX = event.headLandsAtX;
+		const targetY = this.slope ? this.slope.getSlopeYAtX(targetX) : event.slopeY;
+
+		this.headArcVx = (targetX - this.headArcStartX) / this.headFlightDuration;
+		this.headArcVy = (targetY - this.headArcStartY - 0.5 * KR_GRAVITY * this.headFlightDuration * this.headFlightDuration) / this.headFlightDuration;
 		this.headAngularVel = event.headSpinCount * Math.PI * 2 / event.headAirTime;
+		this.headFlightElapsed = 0;
 		this.headPhysicsActive = true;
 
 		return new Promise<void>((resolve) => {
 			this.headResolve = resolve;
 		});
+	}
+
+	finalizeTerrain(): void {
+		if (this.slope) this.slope.finalize();
 	}
 
 	triggerScreenShake(intensity: number): void {
