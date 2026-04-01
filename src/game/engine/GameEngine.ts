@@ -347,20 +347,20 @@ export class GameEngine {
 		if (this.robotWheel) this.robotWheel.setVisible(false);
 		if (this.kicker) await this.kicker.kick();
 
-		// For the initial kick, we don't know the landing point yet.
-		// Use velocity from event; first waitForBounce will recalculate the arc.
+		// Initial kick — no spins, gentle tumble.
+		// waitForBounce will recalculate arc to exact landing position.
 		this.arcStartX = this.robot.x;
 		this.arcStartY = this.robot.y;
 		this.arcVx = event.initialVx * VEL_SCALE;
 		this.arcVy = event.initialVy * VEL_SCALE;
-		this.flightDuration = 2.0; // will be corrected by first bounce event
+		this.flightDuration = 2.0; // will be corrected by first waitForBounce
 
-		this.robotAngularVel = event.initialVx * 0.3;
-		this.targetSpinCount = 0;
+		this.targetSpinCount = 0; // no spins on initial kick
 		this.targetLandingAngle = 0;
 		this.flightStartRotation = this.robot.rotation;
 		this.completedSpins = 0;
 		this.flightElapsed = 0;
+		this.robotAngularVel = 0;
 		this.physicsActive = true;
 	}
 
@@ -371,28 +371,30 @@ export class GameEngine {
 
 		if (!this.physicsActive) return;
 
-		// Compute a NEW arc from current robot position to the landing point.
-		// Use event.airTime as total flight for this segment.
-		// The robot is already in flight — we set flightElapsed = 0 and compute
-		// vx/vy so the parabola starts here and ends at the target.
+		// Recalculate arc from current position to landing point.
+		// IMPORTANT: spinCount/airTime in the event describe the OUTGOING flight
+		// (after this landing), NOT the current flight. We keep the targetSpinCount
+		// and flightDuration that were set by the PREVIOUS launchFromBounce/startKick.
 		const currentX = this.robot.x;
 		const currentY = this.robot.y;
 		const targetX = event.positionX;
 		const targetY = event.slopeY + ROBOT_OFFSET_Y;
 
-		// Use full airTime for the arc (this is the time from launch to landing)
-		const totalTime = Math.max(0.5, event.airTime);
+		// Estimate remaining flight time from distance and current velocity
+		const dx = targetX - currentX;
+		const remainingTime = Math.max(0.3, this.flightDuration - this.flightElapsed);
 
 		this.arcStartX = currentX;
 		this.arcStartY = currentY;
-		this.arcVx = (targetX - currentX) / totalTime;
-		this.arcVy = (targetY - currentY - 0.5 * KR_GRAVITY * totalTime * totalTime) / totalTime;
-		this.flightDuration = totalTime;
+		this.arcVx = dx / remainingTime;
+		this.arcVy = (targetY - currentY - 0.5 * KR_GRAVITY * remainingTime * remainingTime) / remainingTime;
+		this.flightDuration = remainingTime;
 		this.flightElapsed = 0;
 
+		// Update landing angle but keep spin count from launch
 		this.flightStartRotation = this.robot.rotation;
-		this.targetSpinCount = event.spinCount;
 		this.targetLandingAngle = LANDING_ANGLES[event.landedOn] ?? 0;
+		// DO NOT override targetSpinCount — it was set by launchFromBounce
 		this.completedSpins = 0;
 
 		return new Promise<void>((resolve) => {
@@ -441,7 +443,8 @@ export class GameEngine {
 			);
 		}
 
-		// Set up analytical arc for the next bounce
+		// Set up analytical arc for the OUTGOING flight.
+		// event.launchVx/Vy, airTime, spinCount all describe THIS outgoing flight.
 		this.arcStartX = this.robot.x;
 		this.arcStartY = this.robot.y;
 		this.arcVx = event.launchVx * VEL_SCALE;
@@ -451,8 +454,9 @@ export class GameEngine {
 		this.flightStartRotation = this.robot.rotation;
 		this.completedSpins = 0;
 		this.flightElapsed = 0;
+		// spinCount describes spins during THIS outgoing flight
 		this.targetSpinCount = event.spinCount;
-		// Default landing angle — both_feet (upright). Will be overridden by next waitForBounce.
+		// Landing angle will be set by next waitForBounce; default to upright
 		this.targetLandingAngle = 0;
 		this.robotAngularVel = 0;
 		this.physicsActive = true;
