@@ -173,23 +173,35 @@ export class GameEngine {
 		this.robot.y = this.arcStartY + this.arcVy * t + 0.5 * KR_GRAVITY * t * t;
 
 		// --- Rotation ---
-		if (this.targetSpinCount > 0) {
+		// Robot must arrive at exactly targetLandingAngle (absolute) at the end of flight,
+		// having completed targetSpinCount full rotations along the way.
+		{
 			const progress = Math.min(1, t / this.flightDuration);
 			const easedProgress = easeInOutCubic(progress);
-			const totalRotation = this.targetSpinCount * Math.PI * 2 + this.targetLandingAngle;
-			this.robot.setRotation(this.flightStartRotation + totalRotation * easedProgress);
-		} else {
-			this.robot.setRotation(this.robot.rotation + this.robotAngularVel * dt);
+
+			// Normalize start angle to [0, 2π)
+			const startNorm = ((this.flightStartRotation % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+			// Angular delta to reach landing angle (shortest forward path)
+			let delta = this.targetLandingAngle - startNorm;
+			if (delta < 0) delta += Math.PI * 2;
+			// Add full spins
+			delta += this.targetSpinCount * Math.PI * 2;
+
+			this.robot.setRotation(this.flightStartRotation + delta * easedProgress);
 		}
 
 		this.robot.container.position.set(this.robot.x, this.robot.y);
 
-		// --- Spring joint update (only when actually spinning/tumbling) ---
-		if (this.targetSpinCount > 0 || Math.abs(this.robotAngularVel) > 0.1) {
-			const bodyAngVel = this.targetSpinCount > 0
-				? (this.targetSpinCount * Math.PI * 2) / this.flightDuration
-				: this.robotAngularVel;
-			this.robot.updateJoints(dt, bodyAngVel);
+		// --- Spring joint update ---
+		// Compute effective angular velocity for limb swing
+		const startNorm2 = ((this.flightStartRotation % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+		let delta2 = this.targetLandingAngle - startNorm2;
+		if (delta2 < 0) delta2 += Math.PI * 2;
+		delta2 += this.targetSpinCount * Math.PI * 2;
+		const effectiveAngVel = delta2 / this.flightDuration;
+
+		if (effectiveAngVel > 0.5) {
+			this.robot.updateJoints(dt, effectiveAngVel);
 		}
 
 		// --- Spin notifications mid-flight ---
@@ -217,10 +229,13 @@ export class GameEngine {
 
 		// --- Landing detection (time-based) ---
 		if (t >= this.flightDuration) {
+			// Snap to exact landing position
 			this.robot.x = this.arcStartX + this.arcVx * this.flightDuration;
 			this.robot.y = this.arcStartY + this.arcVy * this.flightDuration
 				+ 0.5 * KR_GRAVITY * this.flightDuration * this.flightDuration;
 
+			// Rotation should already be at targetLandingAngle from the eased rotation above,
+			// but snap to exact value to remove floating point drift
 			if (this.pendingLandingType) {
 				this.robot.setRotation(LANDING_ANGLES[this.pendingLandingType] ?? 0);
 				this.pendingLandingType = null;
@@ -437,15 +452,9 @@ export class GameEngine {
 		this.completedSpins = 0;
 		this.flightElapsed = 0;
 		this.targetSpinCount = event.spinCount;
-		this.targetLandingAngle = 0; // will be set by next waitForBounce
-
-		if (event.spinCount > 0) {
-			this.robotAngularVel = 0;
-		} else if (event.landedOn !== 'both_feet') {
-			this.robotAngularVel = ((Math.random() - 0.5) * 3) + (event.launchVx > 0 ? 1 : -1);
-		} else {
-			this.robotAngularVel = (Math.random() - 0.5) * 0.8;
-		}
+		// Default landing angle — both_feet (upright). Will be overridden by next waitForBounce.
+		this.targetLandingAngle = 0;
+		this.robotAngularVel = 0;
 		this.physicsActive = true;
 	}
 
